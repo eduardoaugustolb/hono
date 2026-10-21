@@ -2,6 +2,9 @@ import { mount } from '.'
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 import type { ExecutionContext } from '../../context'
 import { Hono } from '../../hono'
+import { PatternRouter } from '../../router/pattern-router'
+import { RegExpRouter } from '../../router/reg-exp-router'
+import { TrieRouter } from '../../router/trie-router'
 import { getPath } from '../../utils/url'
 
 describe('mount()', () => {
@@ -214,6 +217,85 @@ describe('mount()', () => {
 
       expect(res.status).toBe(200)
       expect(await res.text()).toBe(expected)
+    })
+  })
+
+  describe.each([
+    { name: 'RegExpRouter', Router: RegExpRouter },
+    { name: 'TrieRouter', Router: TrieRouter },
+    { name: 'PatternRouter', Router: PatternRouter },
+  ])('With dynamic prefixes using $name', ({ Router }) => {
+    it.each([
+      ['/api/:version/*', '/api/v1/hello', '/hello'],
+      ['/x/:prefix{.+}/x/*', '/x/a/b/x/c/d', '/c/d'],
+      ['/api/:id{[^/]+}/*', '/api/ad%2Fmin/x%252Fy', '/x%252Fy'],
+    ])(
+      'Should resolve %s from the current route captures for %s',
+      async (route, path, expected) => {
+        const app = new Hono({ router: new Router() })
+        app.use('*', async (_c, next) => {
+          await next()
+        })
+        app.all(
+          route,
+          mount((req) => new Response(getPath(req)))
+        )
+
+        const res = await app.request(path)
+
+        expect(res.status).toBe(200)
+        expect(await res.text()).toBe(expected)
+      }
+    )
+
+    it.each(['/api', '/api/123'])(
+      'Should map an optional parameter prefix to the mounted root for %s',
+      async (path) => {
+        const app = new Hono({ router: new Router() })
+        app.all(
+          '/api/:id?',
+          mount((req) => new Response(getPath(req)))
+        )
+
+        const res = await app.request(path)
+
+        expect(res.status).toBe(200)
+        expect(await res.text()).toBe('/')
+      }
+    )
+
+    it('Should preserve the request when stripping a dynamic prefix', async () => {
+      const app = new Hono({ router: new Router() })
+      app.all(
+        '/api/:version/*',
+        mount(async (req) => {
+          const url = new URL(req.url)
+          return Response.json({
+            path: url.pathname,
+            search: url.search,
+            method: req.method,
+            contentType: req.headers.get('content-type'),
+            message: req.headers.get('x-message'),
+            body: await req.text(),
+          })
+        })
+      )
+
+      const res = await app.request('/api/v1/submit?tag=a&tag=b&value=a%2Fb', {
+        method: 'POST',
+        headers: { 'content-type': 'text/plain', 'x-message': 'mounted request' },
+        body: 'hello from the parent app',
+      })
+
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({
+        path: '/submit',
+        search: '?tag=a&tag=b&value=a%2Fb',
+        method: 'POST',
+        contentType: 'text/plain',
+        message: 'mounted request',
+        body: 'hello from the parent app',
+      })
     })
   })
 
